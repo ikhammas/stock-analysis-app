@@ -72,40 +72,41 @@ if ticker_symbol:
             try:
                 exp_dates = stock.options
                 if exp_dates:
-                    selected_exp = st.selectbox("اختر تاريخ انتهاء العقد:", exp_dates)
+                    # اختيار تاريخ ينتهي لاحقاً أو التاريخ الأول
+                    selected_exp = st.selectbox("اختر تاريخ انتهاء العقد:", exp_dates, index=0)
                     opt_chain = stock.option_chain(selected_exp)
                     calls = opt_chain.calls
                     puts = opt_chain.puts
 
-                    # إزالة العقود الصفريّة
-                    calls_valid = calls[calls['openInterest'] > 0]
-                    puts_valid = puts[puts['openInterest'] > 0]
+                    # فلترة العقود التي تملك اهتمام مفتوح أكبر من صفر
+                    calls_active = calls[calls['openInterest'] > 0]
+                    puts_active = puts[puts['openInterest'] > 0]
 
-                    call_wall = calls_valid.loc[calls_valid['openInterest'].idxmax()]['strike'] if not calls_valid.empty else 0
-                    put_wall = puts_valid.loc[puts_valid['openInterest'].idxmax()]['strike'] if not puts_valid.empty else 0
+                    if not calls_active.empty and not puts_active.empty:
+                        call_wall = calls_active.loc[calls_active['openInterest'].idxmax()]['strike']
+                        put_wall = puts_active.loc[puts_active['openInterest'].idxmax()]['strike']
 
-                    col_a, col_b = st.columns(2)
-                    col_a.warning(f"🧱 Call Wall (أعلى اهتمام عقود الشراء): ${call_wall}")
-                    col_b.success(f"🛡️ Put Wall (أعلى اهتمام عقود البيع): ${put_wall}")
+                        col_a, col_b = st.columns(2)
+                        col_a.warning(f"🧱 Call Wall (أعلى اهتمام عقود الشراء): ${call_wall:.1f}")
+                        col_b.success(f"🛡️ Put Wall (أعلى اهتمام عقود البيع): ${put_wall:.1f}")
 
-                    # تصفية نطاق العرض حول السعر الحالي
-                    lower_b = last_price * 0.70
-                    upper_b = last_price * 1.30
-                    calls_plot = calls[(calls['strike'] >= lower_b) & (calls['strike'] <= upper_b)]
-                    puts_plot = puts[(puts['strike'] >= lower_b) & (puts['strike'] <= upper_b)]
+                        # حد عرض حول السعر الحالي
+                        lower_b = last_price * 0.75
+                        upper_b = last_price * 1.25
+                        calls_plot = calls_active[(calls_active['strike'] >= lower_b) & (calls_active['strike'] <= upper_b)]
+                        puts_plot = puts_active[(puts_active['strike'] >= lower_b) & (puts_active['strike'] <= upper_b)]
 
-                    if calls_plot.empty and puts_plot.empty:
-                        calls_plot, puts_plot = calls, puts
-
-                    fig_opt = go.Figure()
-                    fig_opt.add_trace(go.Bar(x=calls_plot['strike'], y=calls_plot['openInterest'], name='Calls Open Interest', marker_color='#2ECC71'))
-                    fig_opt.add_trace(go.Bar(x=puts_plot['strike'], y=puts_plot['openInterest'], name='Puts Open Interest', marker_color='#E74C3C'))
-                    fig_opt.update_layout(template="plotly_dark", barmode='group', title=f"توزيع عقود الخيارات لـ {ticker_symbol} (تاريخ: {selected_exp})", height=480)
-                    st.plotly_chart(fig_opt, use_container_width=True)
+                        fig_opt = go.Figure()
+                        fig_opt.add_trace(go.Bar(x=calls_plot['strike'], y=calls_plot['openInterest'], name='Calls Open Interest', marker_color='#2ECC71'))
+                        fig_opt.add_trace(go.Bar(x=puts_plot['strike'], y=puts_plot['openInterest'], name='Puts Open Interest', marker_color='#E74C3C'))
+                        fig_opt.update_layout(template="plotly_dark", barmode='group', title=f"توزيع عقود الخيارات لـ {ticker_symbol} (تاريخ: {selected_exp})", height=480)
+                        st.plotly_chart(fig_opt, use_container_width=True)
+                    else:
+                        st.info("⚠️ هذا التاريخ لا يحتوي على بيانات اهتمام مفتوح (Open Interest) نشطة حالياً. يرجى اختيار تاريخ آخر من القائمة أعلاه (مثل عقود الأسبوع القادم).")
                 else:
                     st.info("لا تتوفر بيانات خيارات لهذا الرمز حالياً.")
             except Exception:
-                st.error("تعذر جلب بيانات سلاسل الخيارات لهذا التاريخ، يرجى اختيار تاريخ انتهاء آخر.")
+                st.error("تعذر جلب بيانات الخيارات لهذا التاريخ، يرجى اختيار تاريخ آخر.")
 
         with tab3:
             st.subheader("رصد الفجوات السعرية (Gaps)")

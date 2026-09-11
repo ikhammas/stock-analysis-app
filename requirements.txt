@@ -3,3 +3,4 @@ yfinance
 pandas
 numpy
 plotly
+pyarrow==14.0.2

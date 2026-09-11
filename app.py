@@ -1,10 +1,13 @@
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import streamlit as st
 
 def get_pivots_numpy(highs, lows, order=3):
     pivots = []
     n = len(highs)
+    if n < (order * 2 + 1):
+        return pivots
     for i in range(order, n - order):
         if all(highs[i] >= highs[i-j] for j in range(1, order+1)) and all(highs[i] >= highs[i+j] for j in range(1, order+1)):
             pivots.append((i, highs[i], 'H'))
@@ -23,7 +26,7 @@ def detect_navarro_200(df):
     if len(pivots) < 5:
         return None
 
-    # فحص مرن لأحدث مجموعات Pivots
+    # فحص أحدث 5 مجموعات Pivots لضمان عدم تفويت النموذج
     max_checks = min(5, len(pivots) - 4)
     for offset in range(max_checks):
         end_idx = len(pivots) - offset
@@ -33,17 +36,18 @@ def detect_navarro_200(df):
         types = [p[2] for p in pts]
         vals = [p[1] for p in pts]
 
-        # Bullish Navarro 200: L-H-L-H-L
+        # نموذج Navarro 200 الشرائي (Bullish): القيعان والقمم تكون L-H-L-H-L
         if types == ['L', 'H', 'L', 'H', 'L']:
             X, A, B, C, D = vals
             XA, AB, BC, CD = A - X, A - B, C - B, C - D
             if XA > 0 and AB > 0 and BC > 0 and CD > 0:
                 ab_xa = AB / XA
                 bc_ab = BC / AB
+                # نسبة مرنة تشمل 0.382 - 0.786 لـ XA و 0.886 - 1.13 لـ AB
                 if (0.35 <= ab_xa <= 0.85) and (0.75 <= bc_ab <= 1.25):
                     return "Navarro 200 شرائي (Bullish) 🟢"
 
-        # Bearish Navarro 200: H-L-H-L-H
+        # نموذج Navarro 200 البيعي (Bearish): H-L-H-L-H
         elif types == ['H', 'L', 'H', 'L', 'H']:
             X, A, B, C, D = vals
             XA, AB, BC, CD = X - A, B - A, B - C, D - C
@@ -56,10 +60,9 @@ def detect_navarro_200(df):
 
 def scan_navarro_patterns(symbols_list):
     results = []
-    # فحص إطار 60m مباشرة دون resample معقد لمنع تعليق Streamlit
     tf_scan_config = {
         "30 دقيقة": {"interval": "30m", "period": "1mo"},
-        "60 دقيقة / ساعتان": {"interval": "60m", "period": "2mo"},
+        "60 دقيقة": {"interval": "60m", "period": "2mo"},
         "يومي (Daily)": {"interval": "1d", "period": "6mo"}
     }
     

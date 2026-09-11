@@ -4,12 +4,12 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.signal import argrelextrema
 
 # ---------------------------------------------------------
 # 1. Black-Scholes Gamma Engine (Numpy Only)
 # ---------------------------------------------------------
 def calculate_gamma(S, K, T, r, sigma):
-    """حساب الجاما رياضياً بدالة التوزيع الطبيعي باستخدام numpy مباشرة"""
     if T <= 0 or sigma <= 0 or S <= 0:
         return 0
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
@@ -18,7 +18,6 @@ def calculate_gamma(S, K, T, r, sigma):
     return gamma
 
 def get_gex_data(ticker_symbol):
-    """استخراج سلاسل الخيارات وحساب صافي الجاما ومستوى الـ Flip"""
     tk = yf.Ticker(ticker_symbol)
     try:
         expirations = tk.options
@@ -72,52 +71,80 @@ def get_gex_data(ticker_symbol):
     return df, spot_price, flip_level
 
 # ---------------------------------------------------------
-# 2. Volume Profile & MACD Divergence Scanner Engines
+# 2. Navarro 200 Harmonic Pattern Engine
 # ---------------------------------------------------------
-def calc_volume_profile(df, bins=30):
-    counts, bin_edges = np.histogram(df['Close'], bins=bins, weights=df['Volume'])
-    price_bins = [(bin_edges[i] + bin_edges[i+1])/2 for i in range(len(bin_edges)-1)]
-    poc_idx = np.argmax(counts)
-    poc_price = price_bins[poc_idx]
-    profile_df = pd.DataFrame({'price': price_bins, 'volume': counts})
-    return profile_df, poc_price
-
-def detect_macd_divergence(df):
-    """محرك فحص الدايفرنس بين السعر ومؤشر MACD"""
-    if len(df) < 30:
+def detect_navarro_200(df):
+    """محرك فحص نمط Navarro 200 الهارموني"""
+    if len(df) < 50:
         return None
+
+    prices = df['Close'].values
+    highs = df['High'].values
+    lows = df['Low'].values
     
-    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-    macd = exp1 - exp2
+    # استخراج القمم والقيعان المحلية (Pivots)
+    order = 5
+    max_idx = argrelextrema(highs, np.greater, order=order)[0]
+    min_idx = argrelextrema(lows, np.less, order=order)[0]
     
-    close = df['Close'].values
-    macd_val = macd.values
-    
-    # فحص آخر القمم والقيعان لكتشف الدايفرجنس
-    p_last = close[-1]
-    p_prev = close[-10]
-    m_last = macd_val[-1]
-    m_prev = macd_val[-10]
-    
-    # الدايفرجنس الإيجابي: السعر يعمل قاع أدنى، بينما MACD يعمل قاع أعلى
-    if p_last < p_prev and m_last > m_prev and m_last < 0:
-        return "إيجابي (Bullish Divergence) 🟢"
-    
-    # الدايفرجنس السلبي: السعر يعمل قمة أعلى، بينما MACD يعمل قمة أدنى
-    if p_last > p_prev and m_last < m_prev and m_last > 0:
-        return "سلبي (Bearish Divergence) 🔴"
+    pivots = []
+    for i in range(len(prices)):
+        if i in max_idx:
+            pivots.append((i, highs[i], 'H'))
+        elif i in min_idx:
+            pivots.append((i, lows[i], 'L'))
+
+    if len(pivots) < 5:
+        return None
+
+    # فحص آخر 5 نقاط Pivot (X, A, B, C, D)
+    pts = pivots[-5:]
+    types = [p[2] for p in pts]
+    vals = [p[1] for p in pts]
+
+    # Navarro 200 Bullish: L-H-L-H-L
+    if types == ['L', 'H', 'L', 'H', 'L']:
+        X, A, B, C, D = vals
+        XA = A - X
+        AB = A - B
+        BC = C - B
+        CD = C - D
         
+        if XA > 0 and AB > 0 and BC > 0 and CD > 0:
+            ab_xa = AB / XA
+            bc_ab = BC / AB
+            cd_xa = (A - D) / XA
+            
+            # نسب Navarro 200 المعيارية
+            if (0.382 <= ab_xa <= 0.786) and (0.886 <= bc_ab <= 1.13) and (0.886 <= cd_xa <= 1.13):
+                return "Navarro 200 شرائي (Bullish) 🟢"
+
+    # Navarro 200 Bearish: H-L-H-L-H
+    elif types == ['H', 'L', 'H', 'L', 'H']:
+        X, A, B, C, D = vals
+        XA = X - A
+        AB = B - A
+        BC = B - C
+        CD = D - C
+        
+        if XA > 0 and AB > 0 and BC > 0 and CD > 0:
+            ab_xa = AB / XA
+            bc_ab = BC / AB
+            cd_xa = (D - A) / XA
+            
+            if (0.382 <= ab_xa <= 0.786) and (0.886 <= bc_ab <= 1.13) and (0.886 <= cd_xa <= 1.13):
+                return "Navarro 200 بيعي (Bearish) 🔴"
+
     return None
 
-def scan_all_divergences(symbols_list):
-    """مسح قائمة الأسهم عبر أطر (30, 60, 180, 24h)"""
+def scan_navarro_patterns(symbols_list):
+    """مسح الأسهم على أنماط Navarro 200 عبر الأطر الزمنية"""
     results = []
     tf_scan_config = {
         "30 دقيقة": {"interval": "30m", "period": "1mo"},
         "60 دقيقة": {"interval": "60m", "period": "2mo"},
         "180 دقيقة (3 ساعات)": {"interval": "60m", "period": "3mo", "resample": "3h"},
-        "يومي (24h)": {"interval": "1d", "period": "6mo"}
+        "يومي (Daily)": {"interval": "1d", "period": "6mo"}
     }
     
     for sym in symbols_list:
@@ -130,6 +157,65 @@ def scan_all_divergences(symbols_list):
                         'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
                     }).dropna()
                 
+                nav_type = detect_navarro_200(data)
+                if nav_type:
+                    results.append({
+                        "السهم (Ticker)": sym,
+                        "الإطار الزمني": tf_name,
+                        "النمط الهارموني": nav_type,
+                        "السعر الحالي": f"${data['Close'].iloc[-1]:.2f}"
+                    })
+        except Exception:
+            continue
+            
+    return pd.DataFrame(results)
+
+# ---------------------------------------------------------
+# 3. MACD Divergence & Volume Profile Engines
+# ---------------------------------------------------------
+def calc_volume_profile(df, bins=30):
+    counts, bin_edges = np.histogram(df['Close'], bins=bins, weights=df['Volume'])
+    price_bins = [(bin_edges[i] + bin_edges[i+1])/2 for i in range(len(bin_edges)-1)]
+    poc_idx = np.argmax(counts)
+    poc_price = price_bins[poc_idx]
+    profile_df = pd.DataFrame({'price': price_bins, 'volume': counts})
+    return profile_df, poc_price
+
+def detect_macd_divergence(df):
+    if len(df) < 30:
+        return None
+    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    close = df['Close'].values
+    macd_val = macd.values
+    
+    p_last, p_prev = close[-1], close[-10]
+    m_last, m_prev = macd_val[-1], macd_val[-10]
+    
+    if p_last < p_prev and m_last > m_prev and m_last < 0:
+        return "إيجابي (Bullish Divergence) 🟢"
+    if p_last > p_prev and m_last < m_prev and m_last > 0:
+        return "سلبي (Bearish Divergence) 🔴"
+    return None
+
+def scan_all_divergences(symbols_list):
+    results = []
+    tf_scan_config = {
+        "30 دقيقة": {"interval": "30m", "period": "1mo"},
+        "60 دقيقة": {"interval": "60m", "period": "2mo"},
+        "180 دقيقة (3 ساعات)": {"interval": "60m", "period": "3mo", "resample": "3h"},
+        "يومي (24h)": {"interval": "1d", "period": "6mo"}
+    }
+    for sym in symbols_list:
+        try:
+            tk = yf.Ticker(sym)
+            for tf_name, cfg in tf_scan_config.items():
+                data = tk.history(period=cfg["period"], interval=cfg["interval"])
+                if not data.empty and "resample" in cfg:
+                    data = data.resample(cfg["resample"], origin='start').agg({
+                        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                    }).dropna()
                 div_type = detect_macd_divergence(data)
                 if div_type:
                     results.append({
@@ -140,11 +226,10 @@ def scan_all_divergences(symbols_list):
                     })
         except Exception:
             continue
-            
     return pd.DataFrame(results)
 
 # ---------------------------------------------------------
-# 3. Streamlit Interface & Logic
+# 4. Streamlit Interface & Layout
 # ---------------------------------------------------------
 st.set_page_config(page_title="AlphaPulse Analytics Pro", layout="wide", page_icon="⚡")
 
@@ -155,11 +240,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ AlphaPulse | منصة التحليل الفني ومستويات الجاما المتقدمة (GEX)")
+st.title("⚡ AlphaPulse | منصة التحليل الفني والهارموني والجاما (GEX)")
 
-# القائمة الجانبية
 st.sidebar.header("🔍 إعدادات السهم")
-symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="TSLA").strip().upper()
+symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="NVDA").strip().upper()
 
 timeframe_options = {
     "5 دقائق": {"interval": "5m", "period": "5d"},
@@ -196,7 +280,6 @@ if entry_p > stop_p and entry_p > 0:
     total_val = shares * entry_p
     st.sidebar.success(f"**عدد الأسهم:** {shares}\n\n**القيمة الإجمالية:** ${total_val:,.2f}\n\n**أقصى خسارة:** ${risk_amt:,.2f}")
 
-# جلب البيانات للسهم المحدد
 if symbol:
     stock = yf.Ticker(symbol)
     try:
@@ -223,16 +306,16 @@ if symbol:
         c3.metric("أدنى سعر بالفترة", f"${hist['Low'].min():.2f}")
         c4.metric("حجم التداول", f"{int(hist['Volume'].iloc[-1]):,}")
 
-        # التبويبات (أضفنا تبويب كاشف الدايفرجنس الجديد)
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        # التبويبات المتكاملة
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📈 التحليل الفني والمؤشرات", 
-            "🎯 كاشف الدايفرجنس الآلي (MACD Scanner)",
+            "🔮 مستكشف Navarro 200",
+            "🎯 كاشف الدايفرجنس (MACD)",
             "📊 تحليل الجاما (GEX Profile)", 
             "🔍 الفجوات ونقاط الارتكاز",
             "📋 التقرير والبيانات"
         ])
 
-        # --- Tab 1: الشارت والمؤشرات ---
         with tab1:
             st.subheader(f"الشارت التفاعلي لسهم {symbol} ({selected_tf})")
             
@@ -312,25 +395,37 @@ if symbol:
 
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- Tab 2: كاشف الدايفرجنس الآلي ---
+        # --- Tab 2: مستكشف Navarro 200 ---
         with tab2:
+            st.subheader("🔮 مستكشف أنماط Navarro 200 الهارمونية الآلي")
+            st.caption("يفحص النظام تلقائياً تشكل نمط Navarro 200 عبر الأطر الزمنية (30m, 60m, 180m, Daily).")
+            
+            default_watch_list = ["NVDA", "TSLA", "AAPL", "SPY", "QQQ", "AMZN", "MSFT", "AMD", "CVX", "META"]
+            
+            if st.button("🔎 فحص أنماط Navarro 200 الآن"):
+                with st.spinner("جاري المسح الرياضي لنسب الفيبروناتشي لنموذج Navarro 200..."):
+                    df_nav_results = scan_navarro_patterns(default_watch_list)
+                    
+                    if not df_nav_results.empty:
+                        st.success(f"تم اكتشاف {len(df_nav_results)} نمط Navarro 200 مكتمل/قريب من الإكمال!")
+                        st.dataframe(df_nav_results, use_container_width=True)
+                    else:
+                        st.info("لم يتم العثور على أنماط Navarro 200 مكتملة على قائمة المراقبة حالياً.")
+
+        # --- Tab 3: كاشف الدايفرجنس ---
+        with tab3:
             st.subheader("🎯 ماسح الدايفرجنس الآلي على مؤشر (MACD)")
-            st.caption("يبحث النظام تلقائياً عبر أطر (30m, 60m, 180m, Daily) بدون الحاجة لتحديد السهم يدويًا.")
-            
-            default_watch_list = ["TSLA", "AAPL", "NVDA", "SPY", "QQQ", "AMZN", "MSFT", "AMD", "CVX", "META"]
-            
-            if st.button("🚀 بدء المسح الآن"):
+            if st.button("🚀 بدء مسح الدايفرجنس"):
                 with st.spinner("جاري مسح الأسهم والأطر الزمنية المتعددة..."):
                     df_scan_results = scan_all_divergences(default_watch_list)
-                    
                     if not df_scan_results.empty:
                         st.success(f"تم اكتشاف {len(df_scan_results)} حالة دايفرجنس قائمة!")
                         st.dataframe(df_scan_results, use_container_width=True)
                     else:
                         st.info("لم يتم العثور على دايفرجنس ملحوظ على قائمة المراقبة حالياً.")
 
-        # --- Tab 3: تحليل الجاما (Net GEX Profile) ---
-        with tab3:
+        # --- Tab 4: تحليل الجاما ---
+        with tab4:
             st.subheader("تحليل Net Gamma Exposure (GEX Profile)")
             with st.spinner("جاري حساب الجاما واختراق المستويات..."):
                 gex_df, spot_price, flip_level = get_gex_data(symbol)
@@ -365,8 +460,8 @@ if symbol:
             else:
                 st.warning("تعذر استخراج بيانات الخيارات لهذا السهم أو لا توجد عقود نشطة حالياً.")
 
-        # --- Tab 4: نقاط الارتكاز والفجوات ---
-        with tab4:
+        # --- Tab 5: نقاط الارتكاز والفجوات ---
+        with tab5:
             col_left, col_right = st.columns(2)
             
             with col_left:
@@ -396,20 +491,11 @@ if symbol:
                 else:
                     st.info("لا توجد فجوات سعرية ملحوظة في الفترة المختارة.")
 
-        # --- Tab 5: التقرير وتصدير البيانات ---
-        with tab5:
+        # --- Tab 6: التقرير والبيانات ---
+        with tab6:
             st.subheader("📊 ملخص المنصة وتصدير البيانات")
-            
             rsi_val = hist['RSI'].dropna().iloc[-1] if 'RSI' in hist.columns and not hist['RSI'].dropna().empty else 50
-            if rsi_val > 70:
-                rsi_status = "تشبع شرائي (Overbought)"
-            elif rsi_val < 30:
-                rsi_status = "تشبع بيعي (Oversold)"
-            else:
-                rsi_status = "منطقة محايدة"
-
-            st.write(f"* **حالة مؤشر RSI:** {rsi_status} ({rsi_val:.2f})")
-            st.write(f"* **المتوسطات:** السعر الحالي (${last_price:.2f}) مقارنة بـ SMA 20 (${hist['SMA20'].iloc[-1]:.2f})")
+            st.write(f"* **حالة مؤشر RSI:** {rsi_val:.2f}")
 
             csv = hist.to_csv().encode('utf-8')
             st.download_button(

@@ -29,19 +29,19 @@ st.sidebar.header("🔍 إعدادات السهم")
 input_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="TSLA")
 ticker_symbol = input_symbol.strip().upper()
 
-# الأطر الزمنية
+# إعداد الفواصل مع فترات زمنية متوافقة دقيقة 100% مع yfinance
 timeframe_options = {
     "5 دقائق": {"interval": "5m", "period": "5d"},
     "15 دقيقة": {"interval": "15m", "period": "1mo"},
     "30 دقيقة": {"interval": "30m", "period": "1mo"},
     "60 دقيقة (ساعة)": {"interval": "60m", "period": "2mo"},
-    "ساعتان (120m)": {"interval": "60m", "period": "3mo"},  # إعادة تجميع لساعتين
-    "3 ساعات (180m)": {"interval": "60m", "period": "3mo"},  # إعادة تجميع لـ 3 ساعات
+    "ساعتان (120m)": {"interval": "60m", "period": "3mo", "resample": "2h"},
+    "3 ساعات (180m)": {"interval": "60m", "period": "3mo", "resample": "3h"},
     "يومي (Daily)": {"interval": "1d", "period": "6mo"},
     "أسبوعي (Weekly)": {"interval": "1wk", "period": "2y"}
 }
 
-selected_tf = st.sidebar.selectbox("الاطار الزمني:", list(timeframe_options.keys()), index=6)
+selected_tf = st.sidebar.selectbox("الاطار الزمني:", list(timeframe_options.keys()), index=0)
 tf_config = timeframe_options[selected_tf]
 
 st.sidebar.subheader("🎛️ المؤشرات الفنية")
@@ -53,24 +53,30 @@ show_sma = st.sidebar.checkbox("المتوسطات المتحركة (SMA 20/50)"
 if ticker_symbol:
     stock = yf.Ticker(ticker_symbol)
     try:
+        # جلب البيانات اللحظية بدون تعارض فترات
         hist = stock.history(period=tf_config["period"], interval=tf_config["interval"])
+        
+        # توحيد وتنسيق المنطقة الزمنية للشارتات اللحظية
+        if not hist.empty and hist.index.tz is not None:
+            hist.index = hist.index.tz_convert('America/New_York')
+            
+        # معالجة إعادة التجميع لإطارات 2h و 3h بأسلوب محمي
+        if not hist.empty and "resample" in tf_config:
+            rule = tf_config["resample"]
+            hist = hist.resample(rule, origin='start').agg({
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last',
+                'Volume': 'sum'
+            }).dropna()
+            
     except Exception:
         hist = pd.DataFrame()
 
-    # معالجة الفواصل الخاصة (ساعتان و 3 ساعات)
-    if not hist.empty and selected_tf in ["ساعتان (120m)", "3 ساعات (180m)"]:
-        rule = '2h' if selected_tf == "ساعتان (120m)" else '3h'
-        hist = hist.resample(rule).agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Volume': 'sum'
-        }).dropna()
-
     if not hist.empty:
         last_price = hist['Close'].iloc[-1]
-        prev_price = hist['Close'].iloc[-2]
+        prev_price = hist['Close'].iloc[-2] if len(hist) > 1 else last_price
         change = ((last_price - prev_price) / prev_price) * 100
 
         # كروت المقاييس
@@ -78,7 +84,7 @@ if ticker_symbol:
         c1.metric("السعر الحالي", f"${last_price:.2f}", f"{change:.2f}%")
         c2.metric("أعلى سعر بالفترة", f"${hist['High'].max():.2f}")
         c3.metric("أدنى سعر بالفترة", f"${hist['Low'].min():.2f}")
-        c4.metric("حجم التداول", f"{hist['Volume'].iloc[-1]:,}")
+        c4.metric("حجم التداول", f"{int(hist['Volume'].iloc[-1]):,}")
 
         # التبويبات الرئيسية
         tab1, tab2, tab3, tab4 = st.tabs([
@@ -115,7 +121,7 @@ if ticker_symbol:
             hist['BB_Upper'] = hist['BB_Mid'] + (hist['BB_Std'] * 2)
             hist['BB_Lower'] = hist['BB_Mid'] - (hist['BB_Std'] * 2)
 
-            # إنشاء الشارت المتعدد الأجزاء (Subplots)
+            # إنشاء الشارت المتعدد الأجزاء
             rows = 1
             if show_rsi: rows += 1
             if show_macd: rows += 1
@@ -123,32 +129,34 @@ if ticker_symbol:
             row_heights = [0.6] + [0.2] * (rows - 1)
             fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=row_heights)
 
-            # Candlestick
+            # Candlestick - استخدام سلسلة التواريخ كـ String في اللحظي لمنع الفجوات الزمنية غير التداولية
+            x_values = hist.index.strftime('%Y-%m-%d %H:%M') if 'm' in tf_config['interval'] else hist.index
+
             fig.add_trace(go.Candlestick(
-                x=hist.index, open=hist['Open'], high=hist['High'],
-                low=hist['Low'], close=hist['Close'], name="Price"
+                x=x_values, open=hist['Open'], high=hist['High'],
+                low=hist['Low'], close=hist['Close'], name="السعر"
             ), row=1, col=1)
 
             if show_sma:
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA20'], mode='lines', name='SMA 20', line=dict(color='orange', width=1)), row=1, col=1)
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], mode='lines', name='SMA 50', line=dict(color='cyan', width=1)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['SMA20'], mode='lines', name='SMA 20', line=dict(color='orange', width=1)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['SMA50'], mode='lines', name='SMA 50', line=dict(color='cyan', width=1)), row=1, col=1)
 
             if show_bb:
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['BB_Upper'], mode='lines', name='Upper BB', line=dict(color='rgba(173, 216, 230, 0.5)')), row=1, col=1)
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['BB_Lower'], mode='lines', name='Lower BB', line=dict(color='rgba(173, 216, 230, 0.5)', fill='tonexty')), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['BB_Upper'], mode='lines', name='Upper BB', line=dict(color='rgba(173, 216, 230, 0.5)')), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['BB_Lower'], mode='lines', name='Lower BB', line=dict(color='rgba(173, 216, 230, 0.5)', fill='tonexty')), row=1, col=1)
 
             current_row = 2
             if show_rsi:
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['RSI'], mode='lines', name='RSI', line=dict(color='purple')), row=current_row, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['RSI'], mode='lines', name='RSI', line=dict(color='purple')), row=current_row, col=1)
                 fig.add_hline(y=70, line_dash="dash", line_color="red", row=current_row, col=1)
                 fig.add_hline(y=30, line_dash="dash", line_color="green", row=current_row, col=1)
                 current_row += 1
 
             if show_macd:
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], mode='lines', name='MACD', line=dict(color='blue')), row=current_row, col=1)
-                fig.add_trace(go.Scatter(x=hist.index, y=hist['Signal'], mode='lines', name='Signal', line=dict(color='orange')), row=current_row, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['MACD'], mode='lines', name='MACD', line=dict(color='blue')), row=current_row, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['Signal'], mode='lines', name='Signal', line=dict(color='orange')), row=current_row, col=1)
 
-            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=650)
+            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=650, type='category' if 'm' in tf_config['interval'] else None)
             st.plotly_chart(fig, use_container_width=True)
 
         # --- Tab 2: تحليل الخيارات والجاما (Net GEX Profile) ---
@@ -166,18 +174,14 @@ if ticker_symbol:
                     puts_active = puts[puts['openInterest'] > 0].copy()
 
                     if not calls_active.empty and not puts_active.empty:
-                        # تقدير مبسط لـ Net Gamma: Calls OI - Puts OI
                         df_gex = pd.merge(calls_active[['strike', 'openInterest']], 
                                           puts_active[['strike', 'openInterest']], 
                                           on='strike', how='outer', suffixes=('_call', '_put')).fillna(0)
                         
                         df_gex['Net_OI'] = df_gex['openInterest_call'] - df_gex['openInterest_put']
                         
-                        # حساب المستويات الرئيسية
                         call_wall = calls_active.loc[calls_active['openInterest'].idxmax()]['strike']
                         put_wall = puts_active.loc[puts_active['openInterest'].idxmax()]['strike']
-                        
-                        # تقدير Zero Gamma Level (حسب التوازن بين البوت والكول)
                         zero_gamma_strike = df_gex.iloc[(df_gex['Net_OI'].abs()).idxmin()]['strike']
 
                         col_a, col_b, col_c = st.columns(3)
@@ -185,12 +189,10 @@ if ticker_symbol:
                         col_b.success(f"🛡️ Put Wall: ${put_wall:.1f}")
                         col_c.info(f"⚖️ Zero Gamma Level (تقديري): ${zero_gamma_strike:.1f}")
 
-                        # تصفية النطاق للعرض
                         lower_b = last_price * 0.75
                         upper_b = last_price * 1.25
                         df_gex_plot = df_gex[(df_gex['strike'] >= lower_b) & (df_gex['strike'] <= upper_b)]
 
-                        # رسم Net GEX Bar Chart
                         fig_gex = go.Figure()
                         colors = ['#2ECC71' if val >= 0 else '#E74C3C' for val in df_gex_plot['Net_OI']]
                         fig_gex.add_trace(go.Bar(x=df_gex_plot['strike'], y=df_gex_plot['Net_OI'], marker_color=colors, name='Net Open Interest'))
@@ -244,20 +246,18 @@ if ticker_symbol:
         with tab4:
             st.subheader("📊 ملخص المنصة وتصدير البيانات")
             
-            # ملخص آلي
             st.markdown("**نظرة تحليلية سريعة:**")
-            rsi_val = hist['RSI'].iloc[-1] if 'RSI' in hist.columns else 50
+            rsi_val = hist['RSI'].dropna().iloc[-1] if 'RSI' in hist.columns and not hist['RSI'].dropna().empty else 50
             if rsi_val > 70:
                 rsi_status = "تشبع شرائي (Overbought) - قد يستلزم الحذر"
             elif rsi_val < 30:
-                rsi_status = "تشبع بيعي (Oversold) - احتمال ارتداء للأعلى"
+                rsi_status = "تشبع بيعي (Oversold) - احتمال ارتداد للأعلى"
             else:
                 rsi_status = "منطقة محايدة"
 
             st.write(f"* **حالة مؤشر RSI:** {rsi_status} (القيمة الحالية: {rsi_val:.2f})")
             st.write(f"* **المتوسطات:** السعر الحالي (${last_price:.2f}) مقارنة بـ SMA 20 (${hist['SMA20'].iloc[-1]:.2f})")
 
-            # زر تنزيل CSV
             csv = hist.to_csv().encode('utf-8')
             st.download_button(
                 label="📥 تحميل البيانات التاريخية (CSV)",
@@ -267,4 +267,4 @@ if ticker_symbol:
             )
 
     else:
-        st.error("تعذر العثور على بيانات لهذا الرمز، يرجى إعادة المحاولة مع رمز آخر.")
+        st.error("تعذر العثور على بيانات بهذا الإطار الزمني لهذا الرمز، يرجى التبديل لإطار زمني آخر.")

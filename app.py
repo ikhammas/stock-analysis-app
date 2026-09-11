@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy.signal import argrelextrema
 
 # ---------------------------------------------------------
 # 1. Black-Scholes Gamma Engine (Numpy Only)
@@ -71,33 +70,32 @@ def get_gex_data(ticker_symbol):
     return df, spot_price, flip_level
 
 # ---------------------------------------------------------
-# 2. Navarro 200 Harmonic Pattern Engine
+# 2. Pure Numpy Peak Detector & Navarro 200 Engine
 # ---------------------------------------------------------
+def get_pivots_numpy(highs, lows, order=5):
+    """استخراج القمم والقيعان باستخدام numpy خالص بدون scipy"""
+    pivots = []
+    n = len(highs)
+    for i in range(order, n - order):
+        if all(highs[i] > highs[i-j] for j in range(1, order+1)) and all(highs[i] > highs[i+j] for j in range(1, order+1)):
+            pivots.append((i, highs[i], 'H'))
+        elif all(lows[i] < lows[i-j] for j in range(1, order+1)) and all(lows[i] < lows[i+j] for j in range(1, order+1)):
+            pivots.append((i, lows[i], 'L'))
+    return pivots
+
 def detect_navarro_200(df):
     """محرك فحص نمط Navarro 200 الهارموني"""
     if len(df) < 50:
         return None
 
-    prices = df['Close'].values
     highs = df['High'].values
     lows = df['Low'].values
     
-    # استخراج القمم والقيعان المحلية (Pivots)
-    order = 5
-    max_idx = argrelextrema(highs, np.greater, order=order)[0]
-    min_idx = argrelextrema(lows, np.less, order=order)[0]
-    
-    pivots = []
-    for i in range(len(prices)):
-        if i in max_idx:
-            pivots.append((i, highs[i], 'H'))
-        elif i in min_idx:
-            pivots.append((i, lows[i], 'L'))
+    pivots = get_pivots_numpy(highs, lows, order=4)
 
     if len(pivots) < 5:
         return None
 
-    # فحص آخر 5 نقاط Pivot (X, A, B, C, D)
     pts = pivots[-5:]
     types = [p[2] for p in pts]
     vals = [p[1] for p in pts]
@@ -115,7 +113,6 @@ def detect_navarro_200(df):
             bc_ab = BC / AB
             cd_xa = (A - D) / XA
             
-            # نسب Navarro 200 المعيارية
             if (0.382 <= ab_xa <= 0.786) and (0.886 <= bc_ab <= 1.13) and (0.886 <= cd_xa <= 1.13):
                 return "Navarro 200 شرائي (Bullish) 🟢"
 
@@ -138,7 +135,6 @@ def detect_navarro_200(df):
     return None
 
 def scan_navarro_patterns(symbols_list):
-    """مسح الأسهم على أنماط Navarro 200 عبر الأطر الزمنية"""
     results = []
     tf_scan_config = {
         "30 دقيقة": {"interval": "30m", "period": "1mo"},
@@ -171,7 +167,7 @@ def scan_navarro_patterns(symbols_list):
     return pd.DataFrame(results)
 
 # ---------------------------------------------------------
-# 3. MACD Divergence & Volume Profile Engines
+# 3. MACD Divergence & Volume Profile
 # ---------------------------------------------------------
 def calc_volume_profile(df, bins=30):
     counts, bin_edges = np.histogram(df['Close'], bins=bins, weights=df['Volume'])
@@ -306,7 +302,6 @@ if symbol:
         c3.metric("أدنى سعر بالفترة", f"${hist['Low'].min():.2f}")
         c4.metric("حجم التداول", f"{int(hist['Volume'].iloc[-1]):,}")
 
-        # التبويبات المتكاملة
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📈 التحليل الفني والمؤشرات", 
             "🔮 مستكشف Navarro 200",
@@ -395,7 +390,6 @@ if symbol:
 
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- Tab 2: مستكشف Navarro 200 ---
         with tab2:
             st.subheader("🔮 مستكشف أنماط Navarro 200 الهارمونية الآلي")
             st.caption("يفحص النظام تلقائياً تشكل نمط Navarro 200 عبر الأطر الزمنية (30m, 60m, 180m, Daily).")
@@ -407,12 +401,11 @@ if symbol:
                     df_nav_results = scan_navarro_patterns(default_watch_list)
                     
                     if not df_nav_results.empty:
-                        st.success(f"تم اكتشاف {len(df_nav_results)} نمط Navarro 200 مكتمل/قريب من الإكمال!")
+                        st.success(f"تم اكتشاف {len(df_nav_results)} نمط Navarro 200!")
                         st.dataframe(df_nav_results, use_container_width=True)
                     else:
                         st.info("لم يتم العثور على أنماط Navarro 200 مكتملة على قائمة المراقبة حالياً.")
 
-        # --- Tab 3: كاشف الدايفرجنس ---
         with tab3:
             st.subheader("🎯 ماسح الدايفرجنس الآلي على مؤشر (MACD)")
             if st.button("🚀 بدء مسح الدايفرجنس"):
@@ -424,7 +417,6 @@ if symbol:
                     else:
                         st.info("لم يتم العثور على دايفرجنس ملحوظ على قائمة المراقبة حالياً.")
 
-        # --- Tab 4: تحليل الجاما ---
         with tab4:
             st.subheader("تحليل Net Gamma Exposure (GEX Profile)")
             with st.spinner("جاري حساب الجاما واختراق المستويات..."):
@@ -460,7 +452,6 @@ if symbol:
             else:
                 st.warning("تعذر استخراج بيانات الخيارات لهذا السهم أو لا توجد عقود نشطة حالياً.")
 
-        # --- Tab 5: نقاط الارتكاز والفجوات ---
         with tab5:
             col_left, col_right = st.columns(2)
             
@@ -489,9 +480,8 @@ if symbol:
                 if not gaps.empty:
                     st.dataframe(gaps.style.format({'Gap_%': '{:.2f}%', 'Open': '${:.2f}', 'High': '${:.2f}', 'Low': '${:.2f}', 'Close': '${:.2f}'}))
                 else:
-                    st.info("لا توجد فجوات سعرية ملحوظة في الفترة المختارة.")
+                    st.info("لا توجد فجوات سعرية ملحظة في الفترة المختارة.")
 
-        # --- Tab 6: التقرير والبيانات ---
         with tab6:
             st.subheader("📊 ملخص المنصة وتصدير البيانات")
             rsi_val = hist['RSI'].dropna().iloc[-1] if 'RSI' in hist.columns and not hist['RSI'].dropna().empty else 50

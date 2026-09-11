@@ -13,7 +13,6 @@ def calculate_gamma(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0 or S <= 0:
         return 0
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    # دالة الكثافة الاحتمالية للتوزيع الطبيعي المعياري
     pdf_d1 = (1.0 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * d1**2)
     gamma = pdf_d1 / (S * sigma * np.sqrt(T))
     return gamma
@@ -96,10 +95,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ AlphaPulse | منصة التحليل الفني وحسابات الجاما (GEX)")
+st.title("⚡ AlphaPulse | منصة التحليل الفني ومستويات الجاما المتقدمة (GEX)")
 
 # القائمة الجانبية
-st.sidebar.header("🔍 إعدادات السهم والمخاطر")
+st.sidebar.header("🔍 إعدادات السهم")
 symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="TSLA").strip().upper()
 
 timeframe_options = {
@@ -107,12 +106,21 @@ timeframe_options = {
     "15 دقيقة": {"interval": "15m", "period": "1mo"},
     "30 دقيقة": {"interval": "30m", "period": "1mo"},
     "60 دقيقة (ساعة)": {"interval": "60m", "period": "2mo"},
+    "ساعتان (120m)": {"interval": "60m", "period": "3mo", "resample": "2h"},
+    "3 ساعات (180m)": {"interval": "60m", "period": "3mo", "resample": "3h"},
     "يومي (Daily)": {"interval": "1d", "period": "6mo"},
     "أسبوعي (Weekly)": {"interval": "1wk", "period": "2y"}
 }
 
-selected_tf = st.sidebar.selectbox("الاطار الزمني:", list(timeframe_options.keys()), index=4)
+selected_tf = st.sidebar.selectbox("الاطار الزمني:", list(timeframe_options.keys()), index=6)
 tf_config = timeframe_options[selected_tf]
+
+st.sidebar.subheader("🎛️ المؤشرات الفنية")
+show_rsi = st.sidebar.checkbox("مؤشر RSI", value=True)
+show_macd = st.sidebar.checkbox("مؤشر MACD", value=True)
+show_bb = st.sidebar.checkbox("نطاقات بولينجر (Bollinger Bands)", value=False)
+show_sma = st.sidebar.checkbox("المتوسطات المتحركة (SMA 20/50)", value=True)
+show_vp = st.sidebar.checkbox("Volume Profile (رسم الحجم السعري)", value=True)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📐 حاسبة حجم الصفقة (Position Sizing)")
@@ -135,6 +143,16 @@ if symbol:
         hist = stock.history(period=tf_config["period"], interval=tf_config["interval"])
         if not hist.empty and hist.index.tz is not None:
             hist.index = hist.index.tz_convert('America/New_York')
+            
+        if not hist.empty and "resample" in tf_config:
+            rule = tf_config["resample"]
+            hist = hist.resample(rule, origin='start').agg({
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last',
+                'Volume': 'sum'
+            }).dropna()
     except Exception:
         hist = pd.DataFrame()
 
@@ -149,33 +167,105 @@ if symbol:
         c3.metric("أدنى سعر بالفترة", f"${hist['Low'].min():.2f}")
         c4.metric("حجم التداول", f"{int(hist['Volume'].iloc[-1]):,}")
 
-        tab1, tab2 = st.tabs(["📈 التحليل الفني و Volume Profile", "📊 تحليل الجاما (GEX Profile)"])
+        # التبويبات المتكاملة
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📈 التحليل الفني والمؤشرات", 
+            "📊 تحليل الجاما (GEX Profile)", 
+            "🔍 الفجوات ونقاط الارتكاز (Pivot Points)",
+            "📋 التقرير والبيانات"
+        ])
 
+        # --- Tab 1: الشارت والمؤشرات + Volume Profile ---
         with tab1:
-            vp_df, poc_price = calc_volume_profile(hist)
+            st.subheader(f"الشارت التفاعلي لسهم {symbol} ({selected_tf})")
+            
+            # الحسابات الفنية
+            hist['SMA20'] = hist['Close'].rolling(20).mean()
+            hist['SMA50'] = hist['Close'].rolling(50).mean()
+            
+            # RSI
+            delta = hist['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            hist['RSI'] = 100 - (100 / (1 + rs))
+
+            # MACD
+            exp1 = hist['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = hist['Close'].ewm(span=26, adjust=False).mean()
+            hist['MACD'] = exp1 - exp2
+            hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
+
+            # Bollinger Bands
+            hist['BB_Mid'] = hist['Close'].rolling(20).mean()
+            hist['BB_Std'] = hist['Close'].rolling(20).std()
+            hist['BB_Upper'] = hist['BB_Mid'] + (hist['BB_Std'] * 2)
+            hist['BB_Lower'] = hist['BB_Mid'] - (hist['BB_Std'] * 2)
+
+            # تحديد عدد الصفوف في الشارت
+            rows = 1
+            if show_rsi: rows += 1
+            if show_macd: rows += 1
+            
+            row_heights = [0.6] + [0.2] * (rows - 1)
+            
+            cols = 2 if show_vp else 1
+            column_widths = [0.8, 0.2] if show_vp else [1.0]
+
+            fig = make_subplots(
+                rows=rows, cols=cols, 
+                column_widths=column_widths, 
+                shared_xaxes=True if not show_vp else False,
+                shared_yaxes=True,
+                vertical_spacing=0.04, 
+                horizontal_spacing=0.02,
+                row_heights=row_heights
+            )
+
             is_intraday = 'm' in tf_config['interval']
             x_values = hist.index.strftime('%Y-%m-%d %H:%M') if is_intraday else hist.index
 
-            fig = make_subplots(rows=1, cols=2, column_widths=[0.8, 0.2], shared_yaxes=True, horizontal_spacing=0.02)
-            
+            # Candlestick
             fig.add_trace(go.Candlestick(
                 x=x_values, open=hist['Open'], high=hist['High'],
                 low=hist['Low'], close=hist['Close'], name="السعر"
             ), row=1, col=1)
-            
-            fig.add_hline(y=poc_price, line_dash="dash", line_color="orange", annotation_text=f"POC: ${poc_price:.2f}", row=1, col=1)
 
-            fig.add_trace(go.Bar(
-                y=vp_df['price'], x=vp_df['volume'], orientation='h',
-                marker_color='rgba(100, 149, 237, 0.5)', name="Volume Profile"
-            ), row=1, col=2)
+            if show_sma:
+                fig.add_trace(go.Scatter(x=x_values, y=hist['SMA20'], mode='lines', name='SMA 20', line=dict(color='orange', width=1)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['SMA50'], mode='lines', name='SMA 50', line=dict(color='cyan', width=1)), row=1, col=1)
 
-            fig.update_layout(template="plotly_dark", height=600, showlegend=False, xaxis_rangeslider_visible=False)
+            if show_bb:
+                fig.add_trace(go.Scatter(x=x_values, y=hist['BB_Upper'], mode='lines', name='Upper BB', line=dict(color='rgba(173, 216, 230, 0.5)')), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['BB_Lower'], mode='lines', name='Lower BB', line=dict(color='rgba(173, 216, 230, 0.5)', fill='tonexty')), row=1, col=1)
+
+            # Volume Profile
+            if show_vp:
+                vp_df, poc_price = calc_volume_profile(hist)
+                fig.add_hline(y=poc_price, line_dash="dash", line_color="gold", annotation_text=f"POC: ${poc_price:.2f}", row=1, col=1)
+                fig.add_trace(go.Bar(
+                    y=vp_df['price'], x=vp_df['volume'], orientation='h',
+                    marker_color='rgba(100, 149, 237, 0.5)', name="Volume Profile"
+                ), row=1, col=2)
+
+            current_row = 2
+            if show_rsi:
+                fig.add_trace(go.Scatter(x=x_values, y=hist['RSI'], mode='lines', name='RSI', line=dict(color='purple')), row=current_row, col=1)
+                fig.add_hline(y=70, line_dash="dash", line_color="red", row=current_row, col=1)
+                fig.add_hline(y=30, line_dash="dash", line_color="green", row=current_row, col=1)
+                current_row += 1
+
+            if show_macd:
+                fig.add_trace(go.Scatter(x=x_values, y=hist['MACD'], mode='lines', name='MACD', line=dict(color='blue')), row=current_row, col=1)
+                fig.add_trace(go.Scatter(x=x_values, y=hist['Signal'], mode='lines', name='Signal', line=dict(color='orange')), row=current_row, col=1)
+
+            fig.update_layout(template="plotly_dark", height=650, xaxis_rangeslider_visible=False, showlegend=False)
             if is_intraday:
                 fig.update_xaxes(type='category', row=1, col=1)
 
             st.plotly_chart(fig, use_container_width=True)
 
+        # --- Tab 2: تحليل الجاما (Net GEX Profile) ---
         with tab2:
             st.subheader("تحليل Net Gamma Exposure (GEX Profile)")
             with st.spinner("جاري حساب الجاما واختراق المستويات..."):
@@ -210,5 +300,59 @@ if symbol:
                 st.plotly_chart(fig_gex, use_container_width=True)
             else:
                 st.warning("تعذر استخراج بيانات الخيارات لهذا السهم أو لا توجد عقود نشطة حالياً.")
+
+        # --- Tab 3: نقاط الارتكاز والفجوات ---
+        with tab3:
+            col_left, col_right = st.columns(2)
+            
+            with col_left:
+                st.subheader("📌 نقاط الارتكاز اليومية (Pivot Points)")
+                h = hist['High'].iloc[-1]
+                l = hist['Low'].iloc[-1]
+                c = hist['Close'].iloc[-1]
+                
+                pp = (h + l + c) / 3
+                r1 = (2 * pp) - l
+                s1 = (2 * pp) - h
+                r2 = pp + (h - l)
+                s2 = pp - (h - l)
+
+                pivots_df = pd.DataFrame({
+                    "المستوى": ["مقاومة 2 (R2)", "مقاومة 1 (R1)", "ارتكاز (Pivot Point)", "دعم 1 (S1)", "دعم 2 (S2)"],
+                    "السعر": [f"${r2:.2f}", f"${r1:.2f}", f"${pp:.2f}", f"${s1:.2f}", f"${s2:.2f}"]
+                })
+                st.table(pivots_df)
+
+            with col_right:
+                st.subheader("🔍 الفجوات السعرية البارزة (Gaps)")
+                hist['Gap_%'] = ((hist['Open'] - hist['Close'].shift(1)) / hist['Close'].shift(1)) * 100
+                gaps = hist[abs(hist['Gap_%']) >= 0.8][['Open', 'High', 'Low', 'Close', 'Gap_%']]
+                if not gaps.empty:
+                    st.dataframe(gaps.style.format({'Gap_%': '{:.2f}%', 'Open': '${:.2f}', 'High': '${:.2f}', 'Low': '${:.2f}', 'Close': '${:.2f}'}))
+                else:
+                    st.info("لا توجد فجوات سعرية ملحوظة في الفترة المختارة.")
+
+        # --- Tab 4: التقرير وتصدير البيانات ---
+        with tab4:
+            st.subheader("📊 ملخص المنصة وتصدير البيانات")
+            
+            rsi_val = hist['RSI'].dropna().iloc[-1] if 'RSI' in hist.columns and not hist['RSI'].dropna().empty else 50
+            if rsi_val > 70:
+                rsi_status = "تشبع شرائي (Overbought)"
+            elif rsi_val < 30:
+                rsi_status = "تشبع بيعي (Oversold)"
+            else:
+                rsi_status = "منطقة محايدة"
+
+            st.write(f"* **حالة مؤشر RSI:** {rsi_status} ({rsi_val:.2f})")
+            st.write(f"* **المتوسطات:** السعر الحالي (${last_price:.2f}) مقارنة بـ SMA 20 (${hist['SMA20'].iloc[-1]:.2f})")
+
+            csv = hist.to_csv().encode('utf-8')
+            st.download_button(
+                label="📥 تحميل البيانات التاريخية (CSV)",
+                data=csv,
+                file_name=f"{symbol}_data_{selected_tf}.csv",
+                mime="text/csv"
+            )
     else:
         st.error("تعذر العثور على بيانات بهذا الإطار الزمني لهذا الرمز.")

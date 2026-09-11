@@ -1,12 +1,9 @@
-import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
 import yfinance as yf
+import streamlit as st
 
-# إعداد الصفحة
-st.set_page_config(page_title="AlphaPulse Analytics", layout="wide")
-
-def get_pivots_numpy(highs, lows, order=3):
+def get_pivots_numpy(highs, lows, order=2):
     pivots = []
     n = len(highs)
     if n < (order * 2 + 1):
@@ -20,41 +17,53 @@ def get_pivots_numpy(highs, lows, order=3):
 
 def detect_navarro_200(df):
     try:
-        if df is None or len(df) < 20:
+        if df is None or len(df) < 15:
             return None
 
         highs = df['High'].values
         lows = df['Low'].values
-        pivots = get_pivots_numpy(highs, lows, order=3)
+        pivots = get_pivots_numpy(highs, lows, order=2)
 
         if len(pivots) < 5:
             return None
 
-        max_checks = min(5, len(pivots) - 4)
+        # تصفية الـ Pivots المتعاقبة لتجنب التكرار (H بعد H أو L بعد L)
+        filtered_pivots = []
+        for p in pivots:
+            if not filtered_pivots or filtered_pivots[-1][2] != p[2]:
+                filtered_pivots.append(p)
+
+        if len(filtered_pivots) < 5:
+            return None
+
+        max_checks = min(6, len(filtered_pivots) - 4)
         for offset in range(max_checks):
-            end_idx = len(pivots) - offset
+            end_idx = len(filtered_pivots) - offset
             start_idx = end_idx - 5
-            pts = pivots[start_idx:end_idx]
+            pts = filtered_pivots[start_idx:end_idx]
             
             types = [p[2] for p in pts]
             vals = [p[1] for p in pts]
 
+            # Navarro 200 Bullish: L-H-L-H-L
             if types == ['L', 'H', 'L', 'H', 'L']:
                 X, A, B, C, D = vals
                 XA, AB, BC, CD = A - X, A - B, C - B, C - D
                 if XA > 0 and AB > 0 and BC > 0 and CD > 0:
                     ab_xa = AB / XA
                     bc_ab = BC / AB
-                    if (0.35 <= ab_xa <= 0.85) and (0.75 <= bc_ab <= 1.25):
+                    # توسيع مرونة النسب لتشمل نموذج NVDA الموضح في الشارت
+                    if (0.30 <= ab_xa <= 0.90) and (0.70 <= bc_ab <= 1.30):
                         return "Navarro 200 شرائي (Bullish) 🟢"
 
+            # Navarro 200 Bearish: H-L-H-L-H
             elif types == ['H', 'L', 'H', 'L', 'H']:
                 X, A, B, C, D = vals
                 XA, AB, BC, CD = X - A, B - A, B - C, D - C
                 if XA > 0 and AB > 0 and BC > 0 and CD > 0:
                     ab_xa = AB / XA
                     bc_ab = BC / AB
-                    if (0.35 <= ab_xa <= 0.85) and (0.75 <= bc_ab <= 1.25):
+                    if (0.30 <= ab_xa <= 0.90) and (0.70 <= bc_ab <= 1.30):
                         return "Navarro 200 بيعي (Bearish) 🔴"
         return None
     except Exception:
@@ -65,6 +74,7 @@ def scan_navarro_patterns(symbols_list):
     tf_scan_config = {
         "30 دقيقة": {"interval": "30m", "period": "1mo"},
         "60 دقيقة": {"interval": "60m", "period": "2mo"},
+        "ساعتان (2h)": {"interval": "60m", "period": "2mo", "resample": "2h"},
         "يومي (Daily)": {"interval": "1d", "period": "6mo"}
     }
     
@@ -75,6 +85,12 @@ def scan_navarro_patterns(symbols_list):
                 data = tk.history(period=cfg["period"], interval=cfg["interval"])
                 if data.empty:
                     continue
+                
+                # تجميع البيانات لإطار الساعتين عند الحاجة
+                if "resample" in cfg:
+                    data = data.resample('2h').agg({
+                        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                    }).dropna()
                 
                 nav_type = detect_navarro_200(data)
                 if nav_type:
@@ -88,17 +104,3 @@ def scan_navarro_patterns(symbols_list):
             continue
             
     return pd.DataFrame(results)
-
-# الواجهة الرئيسية للتطبيق
-st.title("⚡ AlphaPulse | منصة التحليل الفني والهارموني")
-
-symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="NVDA")
-
-if st.button("فحص Navarro 200 الآن"):
-    st.info(f"جاري فحص السهم {symbol}...")
-    df_res = scan_navarro_patterns([symbol])
-    if not df_res.empty:
-        st.success("تم العثور على أنماط!")
-        st.dataframe(df_res)
-    else:
-        st.warning("لم يتم العثور على أنماط مكتملة حالياً.")

@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
 
 # ضبط الواجهة لتناسب شاشات اللابتوب والآيباد
 st.set_page_config(
@@ -12,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# تصميم داكن احترافي للمؤشرات
+# تصميم داكن احترافي
 st.markdown("""
     <style>
     .main { background-color: #0E1117; color: #FAFAFA; }
@@ -23,9 +22,10 @@ st.markdown("""
 st.title("⚡ AlphaPulse | منصة تحليل الأسهم ومستويات الجاما")
 st.caption("أداة تحليل مخصصة ومجانية 100% تعمل على الويب والآيباد بدون اشتراكات")
 
-# الشريط الجانبي
+# الشريط الجانبي - تحويل الرمز تلقائياً إلى حروف كبيرة
 st.sidebar.header("🔍 إعدادات السهم")
-ticker_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="SPY").upper()
+input_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="TSLA")
+ticker_symbol = input_symbol.strip().upper()
 period = st.sidebar.selectbox("الفترة الزمنية:", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
 
 if ticker_symbol:
@@ -33,7 +33,7 @@ if ticker_symbol:
         stock = yf.Ticker(ticker_symbol)
         try:
             hist = stock.history(period=period)
-        except Exception as e:
+        except Exception:
             hist = pd.DataFrame()
 
     if not hist.empty:
@@ -92,7 +92,7 @@ if ticker_symbol:
                     st.plotly_chart(fig_opt, use_container_width=True)
                 else:
                     st.info("بيانات الخيارات غير متاحة لهذا الرمز حالياً.")
-            except Exception as e:
+            except Exception:
                 st.error("تعذر جلب بيانات سلاسل الخيارات حالياً.")
 
         with tab3:
@@ -101,7 +101,8 @@ if ticker_symbol:
             gaps = hist[abs(hist['Gap_%']) >= 0.8][['Open', 'High', 'Low', 'Close', 'Gap_%']]
             if not gaps.empty:
                 st.write("الفجوات السعرية البارزة (أكبر من 0.8%):")
-                st.dataframe(gaps.style.format({'Gap_%': '{:.2f}%'}).background_gradient(cmap='Spectral'))
+                # تم إصلاح التنسيق لتجنب الاعتماد على مكتبات إضافية
+                st.dataframe(gaps.style.format({'Gap_%': '{:.2f}%', 'Open': '${:.2f}', 'High': '${:.2f}', 'Low': '${:.2f}', 'Close': '${:.2f}'}))
             else:
                 st.info("لا توجد فجوات سعرية ملحوظة في الفترة المختارة.")
     else:

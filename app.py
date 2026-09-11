@@ -72,16 +72,76 @@ def get_gex_data(ticker_symbol):
     return df, spot_price, flip_level
 
 # ---------------------------------------------------------
-# 2. Volume Profile Engine
+# 2. Volume Profile & MACD Divergence Scanner Engines
 # ---------------------------------------------------------
 def calc_volume_profile(df, bins=30):
-    """حساب توزيع الحجم على مستويات السعر للـ POC"""
     counts, bin_edges = np.histogram(df['Close'], bins=bins, weights=df['Volume'])
     price_bins = [(bin_edges[i] + bin_edges[i+1])/2 for i in range(len(bin_edges)-1)]
     poc_idx = np.argmax(counts)
     poc_price = price_bins[poc_idx]
     profile_df = pd.DataFrame({'price': price_bins, 'volume': counts})
     return profile_df, poc_price
+
+def detect_macd_divergence(df):
+    """محرك فحص الدايفرنس بين السعر ومؤشر MACD"""
+    if len(df) < 30:
+        return None
+    
+    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    
+    close = df['Close'].values
+    macd_val = macd.values
+    
+    # فحص آخر القمم والقيعان لكتشف الدايفرجنس
+    p_last = close[-1]
+    p_prev = close[-10]
+    m_last = macd_val[-1]
+    m_prev = macd_val[-10]
+    
+    # الدايفرجنس الإيجابي: السعر يعمل قاع أدنى، بينما MACD يعمل قاع أعلى
+    if p_last < p_prev and m_last > m_prev and m_last < 0:
+        return "إيجابي (Bullish Divergence) 🟢"
+    
+    # الدايفرجنس السلبي: السعر يعمل قمة أعلى، بينما MACD يعمل قمة أدنى
+    if p_last > p_prev and m_last < m_prev and m_last > 0:
+        return "سلبي (Bearish Divergence) 🔴"
+        
+    return None
+
+def scan_all_divergences(symbols_list):
+    """مسح قائمة الأسهم عبر أطر (30, 60, 180, 24h)"""
+    results = []
+    tf_scan_config = {
+        "30 دقيقة": {"interval": "30m", "period": "1mo"},
+        "60 دقيقة": {"interval": "60m", "period": "2mo"},
+        "180 دقيقة (3 ساعات)": {"interval": "60m", "period": "3mo", "resample": "3h"},
+        "يومي (24h)": {"interval": "1d", "period": "6mo"}
+    }
+    
+    for sym in symbols_list:
+        try:
+            tk = yf.Ticker(sym)
+            for tf_name, cfg in tf_scan_config.items():
+                data = tk.history(period=cfg["period"], interval=cfg["interval"])
+                if not data.empty and "resample" in cfg:
+                    data = data.resample(cfg["resample"], origin='start').agg({
+                        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                    }).dropna()
+                
+                div_type = detect_macd_divergence(data)
+                if div_type:
+                    results.append({
+                        "السهم (Ticker)": sym,
+                        "الإطار الزمني": tf_name,
+                        "نوع الدايفرجنس (MACD)": div_type,
+                        "السعر الحالي": f"${data['Close'].iloc[-1]:.2f}"
+                    })
+        except Exception:
+            continue
+            
+    return pd.DataFrame(results)
 
 # ---------------------------------------------------------
 # 3. Streamlit Interface & Logic
@@ -136,7 +196,7 @@ if entry_p > stop_p and entry_p > 0:
     total_val = shares * entry_p
     st.sidebar.success(f"**عدد الأسهم:** {shares}\n\n**القيمة الإجمالية:** ${total_val:,.2f}\n\n**أقصى خسارة:** ${risk_amt:,.2f}")
 
-# جلب البيانات
+# جلب البيانات للسهم المحدد
 if symbol:
     stock = yf.Ticker(symbol)
     try:
@@ -147,11 +207,7 @@ if symbol:
         if not hist.empty and "resample" in tf_config:
             rule = tf_config["resample"]
             hist = hist.resample(rule, origin='start').agg({
-                'Open': 'first',
-                'High': 'max',
-                'Low': 'min',
-                'Close': 'last',
-                'Volume': 'sum'
+                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
             }).dropna()
     except Exception:
         hist = pd.DataFrame()
@@ -167,48 +223,43 @@ if symbol:
         c3.metric("أدنى سعر بالفترة", f"${hist['Low'].min():.2f}")
         c4.metric("حجم التداول", f"{int(hist['Volume'].iloc[-1]):,}")
 
-        # التبويبات المتكاملة
-        tab1, tab2, tab3, tab4 = st.tabs([
+        # التبويبات (أضفنا تبويب كاشف الدايفرجنس الجديد)
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📈 التحليل الفني والمؤشرات", 
+            "🎯 كاشف الدايفرجنس الآلي (MACD Scanner)",
             "📊 تحليل الجاما (GEX Profile)", 
-            "🔍 الفجوات ونقاط الارتكاز (Pivot Points)",
+            "🔍 الفجوات ونقاط الارتكاز",
             "📋 التقرير والبيانات"
         ])
 
-        # --- Tab 1: الشارت والمؤشرات + Volume Profile ---
+        # --- Tab 1: الشارت والمؤشرات ---
         with tab1:
             st.subheader(f"الشارت التفاعلي لسهم {symbol} ({selected_tf})")
             
-            # الحسابات الفنية
             hist['SMA20'] = hist['Close'].rolling(20).mean()
             hist['SMA50'] = hist['Close'].rolling(50).mean()
             
-            # RSI
             delta = hist['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
             hist['RSI'] = 100 - (100 / (1 + rs))
 
-            # MACD
             exp1 = hist['Close'].ewm(span=12, adjust=False).mean()
             exp2 = hist['Close'].ewm(span=26, adjust=False).mean()
             hist['MACD'] = exp1 - exp2
             hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
 
-            # Bollinger Bands
             hist['BB_Mid'] = hist['Close'].rolling(20).mean()
             hist['BB_Std'] = hist['Close'].rolling(20).std()
             hist['BB_Upper'] = hist['BB_Mid'] + (hist['BB_Std'] * 2)
             hist['BB_Lower'] = hist['BB_Mid'] - (hist['BB_Std'] * 2)
 
-            # تحديد عدد الصفوف في الشارت
             rows = 1
             if show_rsi: rows += 1
             if show_macd: rows += 1
             
             row_heights = [0.6] + [0.2] * (rows - 1)
-            
             cols = 2 if show_vp else 1
             column_widths = [0.8, 0.2] if show_vp else [1.0]
 
@@ -217,15 +268,12 @@ if symbol:
                 column_widths=column_widths, 
                 shared_xaxes=True if not show_vp else False,
                 shared_yaxes=True,
-                vertical_spacing=0.04, 
-                horizontal_spacing=0.02,
-                row_heights=row_heights
+                vertical_spacing=0.04, horizontal_spacing=0.02, row_heights=row_heights
             )
 
             is_intraday = 'm' in tf_config['interval']
             x_values = hist.index.strftime('%Y-%m-%d %H:%M') if is_intraday else hist.index
 
-            # Candlestick
             fig.add_trace(go.Candlestick(
                 x=x_values, open=hist['Open'], high=hist['High'],
                 low=hist['Low'], close=hist['Close'], name="السعر"
@@ -239,7 +287,6 @@ if symbol:
                 fig.add_trace(go.Scatter(x=x_values, y=hist['BB_Upper'], mode='lines', name='Upper BB', line=dict(color='rgba(173, 216, 230, 0.5)')), row=1, col=1)
                 fig.add_trace(go.Scatter(x=x_values, y=hist['BB_Lower'], mode='lines', name='Lower BB', line=dict(color='rgba(173, 216, 230, 0.5)', fill='tonexty')), row=1, col=1)
 
-            # Volume Profile
             if show_vp:
                 vp_df, poc_price = calc_volume_profile(hist)
                 fig.add_hline(y=poc_price, line_dash="dash", line_color="gold", annotation_text=f"POC: ${poc_price:.2f}", row=1, col=1)
@@ -265,8 +312,25 @@ if symbol:
 
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- Tab 2: تحليل الجاما (Net GEX Profile) ---
+        # --- Tab 2: كاشف الدايفرجنس الآلي ---
         with tab2:
+            st.subheader("🎯 ماسح الدايفرجنس الآلي على مؤشر (MACD)")
+            st.caption("يبحث النظام تلقائياً عبر أطر (30m, 60m, 180m, Daily) بدون الحاجة لتحديد السهم يدويًا.")
+            
+            default_watch_list = ["TSLA", "AAPL", "NVDA", "SPY", "QQQ", "AMZN", "MSFT", "AMD", "CVX", "META"]
+            
+            if st.button("🚀 بدء المسح الآن"):
+                with st.spinner("جاري مسح الأسهم والأطر الزمنية المتعددة..."):
+                    df_scan_results = scan_all_divergences(default_watch_list)
+                    
+                    if not df_scan_results.empty:
+                        st.success(f"تم اكتشاف {len(df_scan_results)} حالة دايفرجنس قائمة!")
+                        st.dataframe(df_scan_results, use_container_width=True)
+                    else:
+                        st.info("لم يتم العثور على دايفرجنس ملحوظ على قائمة المراقبة حالياً.")
+
+        # --- Tab 3: تحليل الجاما (Net GEX Profile) ---
+        with tab3:
             st.subheader("تحليل Net Gamma Exposure (GEX Profile)")
             with st.spinner("جاري حساب الجاما واختراق المستويات..."):
                 gex_df, spot_price, flip_level = get_gex_data(symbol)
@@ -301,8 +365,8 @@ if symbol:
             else:
                 st.warning("تعذر استخراج بيانات الخيارات لهذا السهم أو لا توجد عقود نشطة حالياً.")
 
-        # --- Tab 3: نقاط الارتكاز والفجوات ---
-        with tab3:
+        # --- Tab 4: نقاط الارتكاز والفجوات ---
+        with tab4:
             col_left, col_right = st.columns(2)
             
             with col_left:
@@ -332,8 +396,8 @@ if symbol:
                 else:
                     st.info("لا توجد فجوات سعرية ملحوظة في الفترة المختارة.")
 
-        # --- Tab 4: التقرير وتصدير البيانات ---
-        with tab4:
+        # --- Tab 5: التقرير وتصدير البيانات ---
+        with tab5:
             st.subheader("📊 ملخص المنصة وتصدير البيانات")
             
             rsi_val = hist['RSI'].dropna().iloc[-1] if 'RSI' in hist.columns and not hist['RSI'].dropna().empty else 50

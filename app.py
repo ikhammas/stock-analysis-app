@@ -3,7 +3,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
 
-# ضبط الواجهة لتناسب شاشات اللابتوب والآيباد
+# ضبط الواجهة
 st.set_page_config(
     page_title="AlphaPulse - منصة تحليل الأسهم والجاما",
     page_icon="⚡",
@@ -22,19 +22,18 @@ st.markdown("""
 st.title("⚡ AlphaPulse | منصة تحليل الأسهم ومستويات الجاما")
 st.caption("أداة تحليل مخصصة ومجانية 100% تعمل على الويب والآيباد بدون اشتراكات")
 
-# الشريط الجانبي - تحويل الرمز تلقائياً إلى حروف كبيرة
+# الشريط الجانبي
 st.sidebar.header("🔍 إعدادات السهم")
-input_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="TSLA")
+input_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="SPY")
 ticker_symbol = input_symbol.strip().upper()
 period = st.sidebar.selectbox("الفترة الزمنية:", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
 
 if ticker_symbol:
-    with st.spinner('جاري جلب البيانات...'):
-        stock = yf.Ticker(ticker_symbol)
-        try:
-            hist = stock.history(period=period)
-        except Exception:
-            hist = pd.DataFrame()
+    stock = yf.Ticker(ticker_symbol)
+    try:
+        hist = stock.history(period=period)
+    except Exception:
+        hist = pd.DataFrame()
 
     if not hist.empty:
         last_price = hist['Close'].iloc[-1]
@@ -71,29 +70,35 @@ if ticker_symbol:
         with tab2:
             st.subheader("تحليل الاهتمام المفتوح ومستويات GEX")
             try:
-                expirations = stock.expirations
-                if expirations:
-                    selected_exp = st.selectbox("اختر تاريخ انتهاء العقد:", expirations[:6])
+                exp_dates = stock.options
+                if exp_dates:
+                    selected_exp = st.selectbox("اختر تاريخ انتهاء العقد:", exp_dates[:8])
                     opt_chain = stock.option_chain(selected_exp)
                     calls = opt_chain.calls
                     puts = opt_chain.puts
+
+                    # تصفية العقود القريبة من السعر الحالي لوضوح الرسم
+                    lower_bound = last_price * 0.85
+                    upper_bound = last_price * 1.15
+                    calls_filtered = calls[(calls['strike'] >= lower_bound) & (calls['strike'] <= upper_bound)]
+                    puts_filtered = puts[(puts['strike'] >= lower_bound) & (puts['strike'] <= upper_bound)]
 
                     call_wall = calls.loc[calls['openInterest'].idxmax()]['strike'] if not calls.empty and calls['openInterest'].sum() > 0 else 0
                     put_wall = puts.loc[puts['openInterest'].idxmax()]['strike'] if not puts.empty and puts['openInterest'].sum() > 0 else 0
 
                     col_a, col_b = st.columns(2)
-                    col_a.warning(f"🧱 Call Wall (أعلى مستوى اهتمام عقود الشراء): ${call_wall}")
-                    col_b.success(f"🛡️ Put Wall (أعلى مستوى اهتمام عقود البيع): ${put_wall}")
+                    col_a.warning(f"🧱 Call Wall (أعلى اهتمام عقود الشراء): ${call_wall}")
+                    col_b.success(f"🛡️ Put Wall (أعلى اهتمام عقود البيع): ${put_wall}")
 
                     fig_opt = go.Figure()
-                    fig_opt.add_trace(go.Bar(x=calls['strike'], y=calls['openInterest'], name='Calls Open Interest', marker_color='#2ECC71'))
-                    fig_opt.add_trace(go.Bar(x=puts['strike'], y=puts['openInterest'], name='Puts Open Interest', marker_color='#E74C3C'))
-                    fig_opt.update_layout(template="plotly_dark", barmode='group', title="توزيع عقود الخيارات (Calls vs Puts)", height=450)
+                    fig_opt.add_trace(go.Bar(x=calls_filtered['strike'], y=calls_filtered['openInterest'], name='Calls Open Interest', marker_color='#2ECC71'))
+                    fig_opt.add_trace(go.Bar(x=puts_filtered['strike'], y=puts_filtered['openInterest'], name='Puts Open Interest', marker_color='#E74C3C'))
+                    fig_opt.update_layout(template="plotly_dark", barmode='group', title=f"توزيع عقود الخيارات لـ {ticker_symbol} (تاريخ: {selected_exp})", height=480)
                     st.plotly_chart(fig_opt, use_container_width=True)
                 else:
-                    st.info("بيانات الخيارات غير متاحة لهذا الرمز حالياً.")
-            except Exception:
-                st.error("تعذر جلب بيانات سلاسل الخيارات حالياً.")
+                    st.info("لا تتوفر بيانات خيارات لهذا الرمز حالياً.")
+            except Exception as e:
+                st.error("تعذر جلب بيانات سلاسل الخيارات حالياً. يُرجى محاولة اختيار تاريخ آخر أو رمز سهم آخر.")
 
         with tab3:
             st.subheader("رصد الفجوات السعرية (Gaps)")
@@ -101,7 +106,6 @@ if ticker_symbol:
             gaps = hist[abs(hist['Gap_%']) >= 0.8][['Open', 'High', 'Low', 'Close', 'Gap_%']]
             if not gaps.empty:
                 st.write("الفجوات السعرية البارزة (أكبر من 0.8%):")
-                # تم إصلاح التنسيق لتجنب الاعتماد على مكتبات إضافية
                 st.dataframe(gaps.style.format({'Gap_%': '{:.2f}%', 'Open': '${:.2f}', 'High': '${:.2f}', 'Low': '${:.2f}', 'Close': '${:.2f}'}))
             else:
                 st.info("لا توجد فجوات سعرية ملحوظة في الفترة المختارة.")

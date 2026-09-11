@@ -29,7 +29,7 @@ st.sidebar.header("🔍 إعدادات السهم")
 input_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="TSLA")
 ticker_symbol = input_symbol.strip().upper()
 
-# إعداد الفواصل مع فترات زمنية متوافقة دقيقة 100% مع yfinance
+# إعداد الفواصل الزمنية
 timeframe_options = {
     "5 دقائق": {"interval": "5m", "period": "5d"},
     "15 دقيقة": {"interval": "15m", "period": "1mo"},
@@ -41,7 +41,7 @@ timeframe_options = {
     "أسبوعي (Weekly)": {"interval": "1wk", "period": "2y"}
 }
 
-selected_tf = st.sidebar.selectbox("الاطار الزمني:", list(timeframe_options.keys()), index=0)
+selected_tf = st.sidebar.selectbox("الاطار الزمني:", list(timeframe_options.keys()), index=2)
 tf_config = timeframe_options[selected_tf]
 
 st.sidebar.subheader("🎛️ المؤشرات الفنية")
@@ -53,14 +53,11 @@ show_sma = st.sidebar.checkbox("المتوسطات المتحركة (SMA 20/50)"
 if ticker_symbol:
     stock = yf.Ticker(ticker_symbol)
     try:
-        # جلب البيانات اللحظية بدون تعارض فترات
         hist = stock.history(period=tf_config["period"], interval=tf_config["interval"])
         
-        # توحيد وتنسيق المنطقة الزمنية للشارتات اللحظية
         if not hist.empty and hist.index.tz is not None:
             hist.index = hist.index.tz_convert('America/New_York')
             
-        # معالجة إعادة التجميع لإطارات 2h و 3h بأسلوب محمي
         if not hist.empty and "resample" in tf_config:
             rule = tf_config["resample"]
             hist = hist.resample(rule, origin='start').agg({
@@ -129,8 +126,9 @@ if ticker_symbol:
             row_heights = [0.6] + [0.2] * (rows - 1)
             fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=row_heights)
 
-            # Candlestick - استخدام سلسلة التواريخ كـ String في اللحظي لمنع الفجوات الزمنية غير التداولية
-            x_values = hist.index.strftime('%Y-%m-%d %H:%M') if 'm' in tf_config['interval'] else hist.index
+            # تنسيق قيم محور السينات للأطر اللحظية
+            is_intraday = 'm' in tf_config['interval']
+            x_values = hist.index.strftime('%Y-%m-%d %H:%M') if is_intraday else hist.index
 
             fig.add_trace(go.Candlestick(
                 x=x_values, open=hist['Open'], high=hist['High'],
@@ -156,7 +154,11 @@ if ticker_symbol:
                 fig.add_trace(go.Scatter(x=x_values, y=hist['MACD'], mode='lines', name='MACD', line=dict(color='blue')), row=current_row, col=1)
                 fig.add_trace(go.Scatter(x=x_values, y=hist['Signal'], mode='lines', name='Signal', line=dict(color='orange')), row=current_row, col=1)
 
-            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=650, type='category' if 'm' in tf_config['interval'] else None)
+            # التصحيح: ربط نوع المحور السيني داخل xaxis
+            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=650)
+            if is_intraday:
+                fig.update_xaxes(type='category')
+
             st.plotly_chart(fig, use_container_width=True)
 
         # --- Tab 2: تحليل الخيارات والجاما (Net GEX Profile) ---
@@ -200,7 +202,7 @@ if ticker_symbol:
                         
                         fig_gex.update_layout(
                             template="plotly_dark", 
-                            title=f"صافي الاهتمام المفتوح Net OI (إيجابي = دعم جاما / سلبي = تقلبات عالية) لـ {ticker_symbol}",
+                            title=f"صافي الاهتمام المفتوح Net OI لـ {ticker_symbol}",
                             height=480
                         )
                         st.plotly_chart(fig_gex, use_container_width=True)
@@ -242,20 +244,19 @@ if ticker_symbol:
                 else:
                     st.info("لا توجد فجوات سعرية ملحوظة في الفترة المختارة.")
 
-        # --- Tab 4: التقرير اليومي وتصدير البيانات ---
+        # --- Tab 4: التقرير والبيانات ---
         with tab4:
             st.subheader("📊 ملخص المنصة وتصدير البيانات")
             
-            st.markdown("**نظرة تحليلية سريعة:**")
             rsi_val = hist['RSI'].dropna().iloc[-1] if 'RSI' in hist.columns and not hist['RSI'].dropna().empty else 50
             if rsi_val > 70:
-                rsi_status = "تشبع شرائي (Overbought) - قد يستلزم الحذر"
+                rsi_status = "تشبع شرائي (Overbought)"
             elif rsi_val < 30:
-                rsi_status = "تشبع بيعي (Oversold) - احتمال ارتداد للأعلى"
+                rsi_status = "تشبع بيعي (Oversold)"
             else:
                 rsi_status = "منطقة محايدة"
 
-            st.write(f"* **حالة مؤشر RSI:** {rsi_status} (القيمة الحالية: {rsi_val:.2f})")
+            st.write(f"* **حالة مؤشر RSI:** {rsi_status} ({rsi_val:.2f})")
             st.write(f"* **المتوسطات:** السعر الحالي (${last_price:.2f}) مقارنة بـ SMA 20 (${hist['SMA20'].iloc[-1]:.2f})")
 
             csv = hist.to_csv().encode('utf-8')
@@ -267,4 +268,4 @@ if ticker_symbol:
             )
 
     else:
-        st.error("تعذر العثور على بيانات بهذا الإطار الزمني لهذا الرمز، يرجى التبديل لإطار زمني آخر.")
+        st.error("تعذر العثور على بيانات بهذا الإطار الزمني لهذا الرمز.")

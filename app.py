@@ -24,7 +24,7 @@ st.caption("أداة تحليل مخصصة ومجانية 100% تعمل على �
 
 # الشريط الجانبي
 st.sidebar.header("🔍 إعدادات السهم")
-input_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="SPY")
+input_symbol = st.sidebar.text_input("رمز السهم (Ticker):", value="TSLA")
 ticker_symbol = input_symbol.strip().upper()
 period = st.sidebar.selectbox("الفترة الزمنية:", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
 
@@ -72,33 +72,40 @@ if ticker_symbol:
             try:
                 exp_dates = stock.options
                 if exp_dates:
-                    selected_exp = st.selectbox("اختر تاريخ انتهاء العقد:", exp_dates[:8])
+                    selected_exp = st.selectbox("اختر تاريخ انتهاء العقد:", exp_dates)
                     opt_chain = stock.option_chain(selected_exp)
                     calls = opt_chain.calls
                     puts = opt_chain.puts
 
-                    # تصفية العقود القريبة من السعر الحالي لوضوح الرسم
-                    lower_bound = last_price * 0.85
-                    upper_bound = last_price * 1.15
-                    calls_filtered = calls[(calls['strike'] >= lower_bound) & (calls['strike'] <= upper_bound)]
-                    puts_filtered = puts[(puts['strike'] >= lower_bound) & (puts['strike'] <= upper_bound)]
+                    # إزالة العقود الصفريّة
+                    calls_valid = calls[calls['openInterest'] > 0]
+                    puts_valid = puts[puts['openInterest'] > 0]
 
-                    call_wall = calls.loc[calls['openInterest'].idxmax()]['strike'] if not calls.empty and calls['openInterest'].sum() > 0 else 0
-                    put_wall = puts.loc[puts['openInterest'].idxmax()]['strike'] if not puts.empty and puts['openInterest'].sum() > 0 else 0
+                    call_wall = calls_valid.loc[calls_valid['openInterest'].idxmax()]['strike'] if not calls_valid.empty else 0
+                    put_wall = puts_valid.loc[puts_valid['openInterest'].idxmax()]['strike'] if not puts_valid.empty else 0
 
                     col_a, col_b = st.columns(2)
                     col_a.warning(f"🧱 Call Wall (أعلى اهتمام عقود الشراء): ${call_wall}")
                     col_b.success(f"🛡️ Put Wall (أعلى اهتمام عقود البيع): ${put_wall}")
 
+                    # تصفية نطاق العرض حول السعر الحالي
+                    lower_b = last_price * 0.70
+                    upper_b = last_price * 1.30
+                    calls_plot = calls[(calls['strike'] >= lower_b) & (calls['strike'] <= upper_b)]
+                    puts_plot = puts[(puts['strike'] >= lower_b) & (puts['strike'] <= upper_b)]
+
+                    if calls_plot.empty and puts_plot.empty:
+                        calls_plot, puts_plot = calls, puts
+
                     fig_opt = go.Figure()
-                    fig_opt.add_trace(go.Bar(x=calls_filtered['strike'], y=calls_filtered['openInterest'], name='Calls Open Interest', marker_color='#2ECC71'))
-                    fig_opt.add_trace(go.Bar(x=puts_filtered['strike'], y=puts_filtered['openInterest'], name='Puts Open Interest', marker_color='#E74C3C'))
+                    fig_opt.add_trace(go.Bar(x=calls_plot['strike'], y=calls_plot['openInterest'], name='Calls Open Interest', marker_color='#2ECC71'))
+                    fig_opt.add_trace(go.Bar(x=puts_plot['strike'], y=puts_plot['openInterest'], name='Puts Open Interest', marker_color='#E74C3C'))
                     fig_opt.update_layout(template="plotly_dark", barmode='group', title=f"توزيع عقود الخيارات لـ {ticker_symbol} (تاريخ: {selected_exp})", height=480)
                     st.plotly_chart(fig_opt, use_container_width=True)
                 else:
                     st.info("لا تتوفر بيانات خيارات لهذا الرمز حالياً.")
-            except Exception as e:
-                st.error("تعذر جلب بيانات سلاسل الخيارات حالياً. يُرجى محاولة اختيار تاريخ آخر أو رمز سهم آخر.")
+            except Exception:
+                st.error("تعذر جلب بيانات سلاسل الخيارات لهذا التاريخ، يرجى اختيار تاريخ انتهاء آخر.")
 
         with tab3:
             st.subheader("رصد الفجوات السعرية (Gaps)")
